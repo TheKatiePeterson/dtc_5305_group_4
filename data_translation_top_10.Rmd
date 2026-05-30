@@ -1,0 +1,498 @@
+---
+title: "step_2_dtc_group_4"
+author: "Group 4: Taylor Pak, Katie Peterson, Lorenzo Powell, Matt Pringle"
+date: "Due: 5/31/2026"
+output: html_document
+---
+
+# Load Libraries
+
+``` {r message = FALSE, warning = FALSE}
+library(tidyverse)
+library(tseries)
+library(forecast)
+library(ggplot2)
+library(dynlm)
+library(knitr)
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      warning = FALSE,
+                      message = FALSE)
+```
+
+# Project Files
+
+Cleaning:
+  - master_data.csv
+  - gini_data.csv
+  - CENSUS-GINI.xlsx
+  
+Model:
+  - data_translation.r
+  - model_metrics_full.csv
+  - plot5_forecast_vs_actual.png
+  
+# Purpose
+
+The goal of Step 2 is to evaluate forecasting performance using out-of-sample data and compare alternative inequality measures. Based on instructor feedback, the group will investigate whether a Top 10% income share measure produces different forecasting results than the Gini Index. 
+  
+# Load Data
+
+``` {r}
+df <- read.csv("cleaning/master_data.csv")
+
+cat("Years covered:",
+    min(df$YEAR),
+    "to",
+    max(df$YEAR),
+    "\n")
+
+cat("Number of observations:",
+    nrow(df),
+    "\n")
+```
+
+# Inspect Available Variables
+
+```{r}
+names(df)
+```
+
+# Preview Data
+
+```{r}
+head(df)
+```
+
+# Top 10% Data Status
+
+The current master_dataset.csv does not include a Top 10% income share variable. The next step is to collect Top 10% income share data, merge it by year into the master dataset, and then replicate the Gini forecasting workflow using Top 10% as the dependent variable. The Gini Index captures overall inequality, while the Top 10% income share focuses on concentration at the upper end of the distribution. Comparing these measures allows us to evaluate whether forecast performance differs depending on how inequality is measured. 
+
+# Load Top 10% Income Share Data
+
+```{r}
+top_10_raw <- readLines("cleaning/WID_Data_29052026-020519.csv")
+
+head(top_10_raw)
+```
+
+# Clean Top 10% Data
+
+```{r}
+top_10 <- read.csv(
+  "cleaning/WID_Data_29052026-020519.csv",
+  skip = 5, 
+  sep = ";",
+  header = FALSE
+)
+
+colnames(top_10) <- c("Percentile", "YEAR", "TOP10")
+
+top_10 <- top_10 %>%
+  select(YEAR, TOP10)
+
+head(top_10)
+str(top_10)
+```
+
+# Merge Top 10% Data
+
+```{r}
+df_top_10 <- left_join(df, top_10, by = "YEAR")
+
+names(df_top_10)
+
+summary(df_top_10$TOP10)
+```
+
+# Top 10% Income Share Over Time
+
+```{r}
+ggplot(df_top_10,
+       aes(x = YEAR, y = TOP10)) +
+  geom_line(color = "darkred", linewidth = 1) +
+  geom_point(size = 1) +
+  labs(
+    title = "Top 10% Fiscal Income Share",
+    subtitle = "World Inequality Database, 1967 - 2019 after merge",
+    x = "Year",
+    y = "Income Share"
+  ) +
+  theme_minimal()
+```
+
+# Transform Top 10% Income Share
+
+```{r}
+df_top_10 <- df_top_10 %>%
+  arrange(YEAR) %>%
+  mutate(D_TOP10 = c(NA, diff(TOP10)))
+
+summary(df_top_10$D_TOP10)
+```
+
+# ADF Test for Top 10%
+
+```{r}
+adf_top_10_levels <- adf.test(na.omit(df_top_10$TOP10))
+adf_d_top_10 <- adf.test(na.omit(df_top_10$D_TOP10))
+
+adf_results_top_10 <- data.frame(
+  Variable = c("TOP10 levels", "D_TOP10"),
+  P_Value = c(adf_top_10_levels$p.value, adf_d_top_10$p.value),
+  Stationary = c(
+    ifelse(adf_top_10_levels$p.value < 0.05, "Yes", "No"),
+    ifelse(adf_d_top_10$p.value < 0.05, "Yes", "No")
+  )
+)
+
+adf_results_top_10
+```
+
+The ADF results are used to determine whether the Top 10% income share series is stationary in levels or requires differencing prior to model estimation. If the differenced series is stationary, subsequent modeling is performed using D_TOP10.
+
+# AR Lag Selection for Top 10%
+
+```{r}
+n <- nrow(df_top_10)
+
+df_top_10$D_TOP10_lag1 <- c(NA, df_top_10$D_TOP10[-n])
+df_top_10$D_TOP10_lag2 <- c(NA, NA, df_top_10$D_TOP10[-c(n-1, n)])
+df_top_10$D_TOP10_lag3 <- c(NA, NA, NA, df_top_10$D_TOP10[-c(n-2, n-1, n)])
+
+ar_top_10 <- df_top_10 %>%
+  select(D_TOP10, D_TOP10_lag1, D_TOP10_lag2, D_TOP10_lag3) %>%
+  drop_na()
+
+top_10_ar_model <- lm(
+  D_TOP10 ~ D_TOP10_lag1 + D_TOP10_lag2 + D_TOP10_lag3,
+  data = ar_top_10
+)
+
+summary(top_10_ar_model)
+```
+
+# Create Lagged Explanatory Variables
+
+```{r}
+df_top_10 <- df_top_10 %>%
+  arrange(YEAR) %>%
+  mutate(
+    D_unemp = c(NA, diff(unemp)),
+    D_infl = c(NA, diff(infl)),
+    D_col = c(NA, diff(col)),
+    D_hs = c(NA, diff(hs)),
+    D_col_fem = c(NA, diff(col_fem)),
+    D_hs_fem = c(NA, diff(hs_fem)),
+    
+    D2_lfpr = c(NA, diff(D_lfpr)),
+    D2_fem_lfpr = c(NA, diff(D_fem_lfpr)),
+    D2_L_gdp = c(NA, diff(D_L_gdp)),
+    D2_gov_gdp = c(NA, diff(D_gov_gdp)),
+    D2_col = c(NA, diff(D_col)),
+    D2_hs = c(NA, diff(D_hs)),
+    D2_hs_fem = c(NA, diff(D_hs_fem)),
+    
+    D_unemp_l1 = lag(D_unemp, 1),
+    D_unemp_l2 = lag(D_unemp, 2),
+    D_unemp_l3 = lag(D_unemp, 3),
+    
+    D2_L_gdp_l1 = lag(D2_L_gdp, 1),
+    D2_L_gdp_l2 = lag(D2_L_gdp, 2),
+    D2_L_gdp_l3 = lag(D2_L_gdp, 3),
+    
+    D2_lfpr_l1 = lag(D2_lfpr, 1),
+    D2_lfpr_l2 = lag(D2_lfpr, 2),
+    D2_lfpr_l3 = lag(D2_lfpr, 3),
+    
+    D2_fem_lfpr_l1 = lag(D2_fem_lfpr, 1),
+    D2_fem_lfpr_l2 = lag(D2_fem_lfpr, 2),
+    D2_fem_lfpr_l3 = lag(D2_fem_lfpr, 3),
+    
+    D2_gov_gdp_l1 = lag(D2_gov_gdp, 1),
+    D2_gov_gdp_l2 = lag(D2_gov_gdp, 2),
+    D2_gov_gdp_l3 = lag(D2_gov_gdp, 3),
+    
+    D_infl_l1 = lag(D_infl, 1),
+    D_infl_l2 = lag(D_infl, 2),
+    D_infl_l3 = lag(D_infl, 3),
+    
+    D2_col_l1 = lag(D2_col, 1),
+    D2_col_l2 = lag(D2_col, 2),
+    D2_col_l3 = lag(D2_col, 3),
+    
+    D2_hs_l1 = lag(D2_hs, 1),
+    D2_hs_l2 = lag(D2_hs, 2),
+    D2_hs_l3 = lag(D2_hs, 3),
+    
+    D_col_fem_l1 = lag(D_col_fem, 1),
+    D_col_fem_l2 = lag(D_col_fem, 2),
+    D_col_fem_l3 = lag(D_col_fem, 3),
+    
+    D2_hs_fem_l1 = lag(D2_hs_fem, 1),
+    D2_hs_fem_l2 = lag(D2_hs_fem, 2),
+    D2_hs_fem_l3 = lag(D2_hs_fem, 3),
+    
+    d2007 = ifelse(YEAR == 2007, 1, 0),
+    d2020 = ifelse(YEAR == 2020, 1, 0)
+  )
+```
+
+# General Unrestricted Model for Top 10%
+
+```{r}
+model_data_top_10 <- df_top_10 %>%
+  drop_na(
+    D_TOP10,
+    D_TOP10_lag1, D_TOP10_lag2, D_TOP10_lag3,
+    D_unemp_l1, D_unemp_l2, D_unemp_l3,
+    D2_L_gdp_l1, D2_L_gdp_l2, D2_L_gdp_l3,
+    D2_lfpr_l1, D2_lfpr_l2, D2_lfpr_l3,
+    D_infl_l1, D_infl_l2, D_infl_l3
+  )
+
+top_10_gum <- lm(
+  D_TOP10 ~
+    D_TOP10_lag1 + D_TOP10_lag2 + D_TOP10_lag3 +
+    D_unemp_l1 + D_unemp_l2 + D_unemp_l3 +
+    D2_L_gdp_l1 + D2_L_gdp_l2 + D2_L_gdp_l3 +
+    D2_lfpr_l1 + D2_lfpr_l2 + D2_lfpr_l3 +
+    D_infl_l1 + D_infl_l2 + D_infl_l3 +
+    d2007,
+  data = model_data_top_10
+)
+
+summary(top_10_gum)
+```
+
+# Final Top 10% Model
+
+```{r}
+top_10_final_model <- lm(
+  D_TOP10 ~
+    D_TOP10_lag1 +
+    D_unemp_l1 +
+    D2_L_gdp_l1 +
+    d2007,
+  data = model_data_top_10
+)
+
+summary(top_10_final_model)
+```
+
+# In-Sample Evaluation
+
+```{r}
+top_10_fitted <- fitted(top_10_final_model)
+top_10_actual <- model_data_top_10$D_TOP10
+top_10_resids <- top_10_actual - top_10_fitted
+
+top_10_RMSE <- sqrt(mean(top_10_resids^2, na.rm = TRUE))
+top_10_MAE <- mean(abs(top_10_resids), na.rm = TRUE)
+top_10_MAPE <- mean(abs(top_10_resids / top_10_actual), na.rm = TRUE) * 100
+
+top_10_RMSE
+top_10_MAE
+top_10_MAPE
+```
+
+# Out-of-Sample Forecast
+
+```{r}
+train_top_10 <- model_data_top_10 %>%
+  filter(YEAR <= 2015)
+
+test_top_10 <- model_data_top_10 %>%
+  filter(YEAR >= 2016)
+
+top_10_train_model <- lm(
+  D_TOP10 ~
+    D_TOP10_lag1 +
+    D_unemp_l1 +
+    D2_L_gdp_l1 +
+    d2007,
+  data = train_top_10
+)
+
+top_10_forecast <- predict(top_10_train_model, newdata = test_top_10)
+
+top_10_actual_test <- test_top_10$D_TOP10
+top_10_forecast_errors <- top_10_actual_test - top_10_forecast
+
+top_10_forecast_RMSE <- sqrt(mean(top_10_forecast_errors^2, na.rm = TRUE))
+top_10_forecast_MAE <- mean(abs(top_10_forecast_errors), na.rm = TRUE)
+top_10_forecast_MAPE <- mean(abs(top_10_forecast_errors / top_10_actual_test), na.rm = TRUE) * 100
+
+top_10_forecast_RMSE
+top_10_forecast_MAE
+top_10_forecast_MAPE
+```
+
+# Naive Forecast Benchmark
+
+```{r}
+top_10_naive_forecast <- rep(0, length(top_10_actual_test))
+
+top_10_naive_errors <- top_10_actual_test - top_10_naive_forecast
+
+top_10_naive_RMSE <- sqrt(mean(top_10_naive_errors^2, na.rm = TRUE))
+top_10_naive_MAE <- mean(abs(top_10_naive_errors), na.rm = TRUE)
+top_10_naive_MAPE <- mean(abs(top_10_naive_errors / top_10_actual_test), na.rm = TRUE) * 100
+
+top_10_naive_RMSE
+top_10_naive_MAE
+top_10_naive_MAPE
+```
+
+#Forecast Evaluation Table
+
+```{r}
+top_10_results_table <- data.frame(
+  Model = c("Top 10% ARDL", "Top 10% Naive"),
+  RMSE = c(top_10_forecast_RMSE, top_10_naive_RMSE),
+  MAE = c(top_10_forecast_MAE, top_10_naive_MAE),
+  MAPE = c(top_10_forecast_MAPE, top_10_naive_MAPE)
+)
+
+top_10_results_table
+```
+
+# Forecast Plot
+
+```{r}
+last_train_top_10 <- df_top_10$TOP10[df_top_10$YEAR == 2015]
+
+top_10_forecast_levels <- last_train_top_10 + cumsum(top_10_forecast)
+top_10_actual_levels <- last_train_top_10 + cumsum(top_10_actual_test)
+
+top_10_forecast_df <- data.frame(
+  YEAR = c(2015, test_top_10$YEAR),
+  Actual = c(last_train_top_10, top_10_actual_levels),
+  Forecast = c(last_train_top_10, top_10_forecast_levels)
+)
+
+ggplot(top_10_forecast_df, aes(x = YEAR)) +
+  geom_line(aes(y = Actual, color = "Actual"), linewidth = 1) +
+  geom_line(aes(y = Forecast, color = "Forecast"), linewidth = 1, linetype = "dashed") +
+  geom_vline(xintercept = 2015, linetype = "dotted") +
+  labs(
+    title = "Pseudo-Out-of-Sample Forecast: Top 10% Income Share",
+    subtitle = "Model estimated through 2015; forecast evaluated on 2016-2019",
+    x = "Year",
+    y = "Top 10% Income Share",
+    color = NULL
+  ) +
+  theme_minimal()
+```
+
+# Forecast Comparison Table
+
+```{r}
+gini_metrics <- read.csv("model/model_metrics_full.csv")
+
+gini_comparison <- gini_metrics %>%
+  filter(Period %in% c(
+    "Forecast 2016-2024: Our Model",
+    "Forecast 2016-2024: Naive"
+  )) %>%
+  mutate(
+    Measure = c("Gini ARDL", "Gini Naive"),
+    Forecast_Period = "2016-2024",
+    MAE = NA
+  ) %>%
+  select(
+    Measure,
+    Forecast_Period,
+    RMSE,
+    MAE,
+    MAPE = MAPE_pct
+  )
+
+top_10_comparison <- data.frame(
+  Measure = c("Top 10% ARDL", "Top 10% Naive"),
+  Forecast_Period = c("2016-2019", "2016-2019"),
+  RMSE = c(top_10_forecast_RMSE, top_10_naive_RMSE),
+  MAE = c(top_10_forecast_MAE, top_10_naive_MAE),
+  MAPE = c(top_10_forecast_MAPE, top_10_naive_MAPE)
+)
+
+comparison_table <- bind_rows(
+  gini_comparison,
+  top_10_comparison
+)
+
+knitr::kable(
+  comparison_table,
+  digits = 4,
+  caption = "Out-of-Sample Forecast Performance Comparison"
+)
+```
+
+The comparison table summarizes out-of-sample forecasting performance for both inequality measures and serves as the primary basis for evaluating model effectiveness.
+
+# Comparison Table Interpretation
+
+The forecast comparison table evaluates whether the Top 10% income share is more predictable than the Gini Index. The main metrics to focus on are RMSE and MAPE, where lower values indicate better forecast performance.
+
+For the Gini Index, the Step 1 results showed that the naive forecast achieved a lower RMSE than the ARDL model. This suggests that the additional model complexity did not improve forecasting accuracy over the evaluation period and highlights that more sophisticated models do not always outperform simple benchmarks.
+
+The Top 10% income share results should be compared with both the Gini ARDL model and the Gini naive forecast. If the Top 10% ARDL model produces lower forecast errors, this may indicate that income concentration at the upper end of the distribution is more predictable than overall inequality. If forecast performance is similar, the choice of inequality measure may have limited impact on forecasting accuracy.
+
+It is also important to assess whether the ARDL models outperform their corresponding naive forecasts. Better ARDL performance would suggest that the explanatory variables add useful predictive information. If the naive forecasts perform as well as or better than the ARDL models, the results indicate that additional complexity does not necessarily improve forecast accuracy.
+
+Overall, the comparison provides evidence on both the effectiveness of the forecasting models and the suitability of alternative inequality measures for predicting future inequality outcomes.
+
+# Key Findings
+
+The Top 10% income share was added in response to instructor feedback to evaluate whether an alternative measure of inequality produces different forecasting results than the Gini Index.
+
+The forecast comparison table summarizes the relative performance of the ARDL and naive forecasting approaches for both inequality measures. Particular attention should be paid to RMSE and MAPE, where lower values indicate better forecast performance.
+
+The results provide evidence on both the effectiveness of the forecasting models and the suitability of alternative inequality measures for predicting future inequality outcomes.
+
+Future work could examine the Top 1% income share, which may be more sensitive to financial market conditions and could produce different forecasting results. 
+
+# Suggested Slide Content
+
+Recommended visuals and outputs for the Step 2 presentation:
+
+1. Brief recap of the Step 1 presentation, including:
+      Gini Index analysis
+      Final model specification
+      Out-of-sample forecasting results
+      Key findings from the forecast evaluation
+2. Motivation for Step 2:
+      Instructor feedback recommending the inclusion of an           alternative inequality measure
+      Rationale for selecting the Top 10% fiscal income share        from the World Inequality Database
+3. Top 10% Fiscal Income Share Over Time
+      Include the Top 10% Income Share Over Time plot
+      Briefly discuss long-term trends and how they compare to       the Gini Index
+4. Stationarity Testing
+      Include the ADF Test Results table
+      Explain whether differencing was required before model         estimation
+5. Top 10% Model Development
+      Present the final model specification
+      Highlight only the significant variables retained in the       model
+6. Out-of-Sample Forecast Evaluation
+      Include the Top 10% Forecast Plot
+      Discuss forecast performance during the evaluation period
+7. Forecast Comparison Table
+      Compare Gini ARDL, Gini Naive, Top 10% ARDL, and Top 10%       Naive results
+      Highlight RMSE and MAPE as the primary performance             metrics
+8. Key Findings and Conclusions
+      Summarize the primary findings from the comparison
+      - Discuss whether the Top 10% income share was easier or         harder to forecast than the Gini Index
+      Discuss whether the ARDL models outperformed their             corresponding naive benchmarks
+      Explain what the results suggest about forecasting             alternative measures of inequality
+      Briefly discuss future work, including possible analysis       of the Top 1% income share
+      
+Discussion Points:
+- How do the Step 2 results compare with the main findings from Step 1?
+- Was the Top 10% income share stationary after differencing?
+- Which variables were most important in the final Top 10% model?
+- Did the ARDL model outperform the naive benchmark?
+- Was the Top 10% income share easier or harder to forecast than the Gini Index?
+- What are the primary takeaways from the forecast comparison table?
+- What do the results suggest about alternative measures of inequality?
