@@ -1,0 +1,6 @@
+"Period","RMSE","MAPE_pct"
+"In-Sample: Our Model",0.0042,113.4954
+"In-Sample: Naive",0.0037,100
+"Forecast 2016-2024: Our Model",0.0049,118.658
+"Forecast 2016-2024: Naive",0.0038,100
+"Gindelsky (2018) In-Sample",0.191,0.363
